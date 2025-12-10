@@ -727,13 +727,13 @@ export class SmartVoteService {
       const totalVoters = votes.length;
 
       // Count votes for each position
-      const presidentCounts = {};
-      const vicePresidentCounts = {};
-      const secretaryCounts = {};
-      const treasurerCounts = {};
-      const auditorCounts = {};
-      const mmoCounts = {};
-      const representativesCounts = {};
+      const presidentCounts: Record<string, number> = {};
+      const vicePresidentCounts: Record<string, number> = {};
+      const secretaryCounts: Record<string, number> = {};
+      const treasurerCounts: Record<string, number> = {};
+      const auditorCounts: Record<string, number> = {};
+      const mmoCounts: Record<string, number> = {};
+      const representativesCounts: Record<string, number> = {};
 
       votes.forEach((vote: any) => {
         // Count president votes
@@ -826,8 +826,8 @@ export class SmartVoteService {
 
       if (election_type === 'SSG') {
         // For SSG elections, count votes by department with gender breakdown
-        const departmentCounts = {};
-        const departmentGender = {};
+        const departmentCounts: Record<string, number> = {};
+        const departmentGender: Record<string, { Male: number; Female: number; Other: number }> = {};
 
         votes.forEach((vote: any) => {
           const dept = vote.department || 'Unknown';
@@ -917,7 +917,7 @@ export class SmartVoteService {
       let studentsCount = 0;
       let votersCount = 0;
       let adminsCount = 0;
-      let votersByDepartment = [];
+      let votersByDepartment: any[] = [];
 
       // Get students count from student table
       try {
@@ -976,6 +976,73 @@ export class SmartVoteService {
           adminsCount: 0,
           votersByDepartment: [],
         },
+      };
+    }
+  }
+
+  // Get voting history - voters who have voted and who haven't
+  async getVotingHistory(election_type: string) {
+    try {
+      // Get all registered voters
+      let votersQuery = 'SELECT voters_id, student_id, firstname, lastname, department, course, year_level, email FROM voters';
+      const queryParams: string[] = [];
+      
+      // If not SSG, filter by department
+      if (election_type !== 'SSG') {
+        votersQuery += ' WHERE department = ?';
+        queryParams.push(election_type);
+      }
+      
+      const [allVoters] = await this.database.query(votersQuery, queryParams);
+      
+      // Get voters who have voted in this election (current year)
+      const [votedResult] = await this.database.query(
+        `SELECT DISTINCT student_id FROM votes WHERE election_type = ? AND YEAR(voted_date) = YEAR(NOW())`,
+        [election_type]
+      );
+      
+      const votedStudentIds = new Set(votedResult.map((v: any) => v.student_id));
+      
+      // Separate voters into voted and not voted
+      const voted: any[] = [];
+      const notVoted: any[] = [];
+      
+      for (const voter of allVoters) {
+        const voterData = {
+          voters_id: voter.voters_id,
+          student_id: voter.student_id,
+          fullname: `${voter.firstname} ${voter.lastname}`,
+          department: voter.department,
+          course: voter.course,
+          year_level: voter.year_level,
+          email: voter.email,
+        };
+        
+        if (votedStudentIds.has(voter.student_id)) {
+          voted.push(voterData);
+        } else {
+          notVoted.push(voterData);
+        }
+      }
+      
+      return {
+        success: true,
+        message: 'Voting history retrieved successfully',
+        data: {
+          election_type,
+          totalVoters: allVoters.length,
+          votedCount: voted.length,
+          notVotedCount: notVoted.length,
+          voted,
+          notVoted,
+        },
+      };
+    } catch (error) {
+      console.error('Error retrieving voting history:', error);
+      return {
+        success: false,
+        message: 'Failed to retrieve voting history',
+        data: null,
       };
     }
   }

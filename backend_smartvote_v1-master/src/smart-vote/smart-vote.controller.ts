@@ -246,4 +246,10 @@ export class SmartVoteController {
   async getDashboardStats(@Body() body: { department?: string }) {
     return this.smartVoteService.getDashboardStats(body.department);
   }
+
+  //* Get Voting History - voters who voted and who haven't
+  @Post('get-voting-history/:election_type')
+  async getVotingHistory(@Param('election_type') election_type: string) {
+    return this.smartVoteService.getVotingHistory(election_type);
+  }
 }
