@@ -17,6 +17,7 @@ import {
 import { DatabaseService } from 'src/db/db.service';
 import { PasswordHashService } from './password-hash.service';
 import { MailerService } from './mailer.services';
+import { FileUploadUtil } from 'src/utils/file-upload.util';
 // import { UpdateSmartVoteDto } from './dto/update-smart-vote.dto';
 
 @Injectable()
@@ -43,8 +44,56 @@ export class SmartVoteService {
   //*Insert Candidates with Student Existence Check
   async createCandidate(smartVoteCandidate: CandidatesDto) {
     try {
-      const insertResult = await this.database.callStoredProcedure(
-        'insertCandidate',
+      // Check if student has already filed candidacy
+      const [existingCandidates] = await this.database.query(
+        'SELECT * FROM candidates WHERE student_id = ?',
+        [smartVoteCandidate.student_id],
+      );
+
+      if (existingCandidates && existingCandidates.length > 0) {
+        return {
+          success: false,
+          message: 'You have already filed candidacy. Each student can only file once.',
+        };
+      }
+
+      // Ensure status is uppercase, default to 'PENDING' if not provided
+      const status = (smartVoteCandidate.status || 'PENDING').toUpperCase();
+      // Handle image field - convert to relative path for storage
+      let image: string | null = null;
+      if (smartVoteCandidate.image && typeof smartVoteCandidate.image === 'string' && smartVoteCandidate.image.trim() !== '') {
+        const imageUrl = smartVoteCandidate.image.trim();
+        // If it's a full URL, extract the relative path
+        if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+          try {
+            // Extract path from URL (e.g., http://localhost:3004/uploads/candidates/file.jpg -> /uploads/candidates/file.jpg)
+            const urlObj = new URL(imageUrl);
+            image = urlObj.pathname;
+          } catch (error) {
+            // If URL parsing fails, try to extract path manually
+            const pathMatch = imageUrl.match(/\/uploads\/.*$/);
+            image = pathMatch ? pathMatch[0] : imageUrl.startsWith('/') ? imageUrl : '/' + imageUrl;
+          }
+        } else if (imageUrl.startsWith('/')) {
+          // Already a relative path
+          image = imageUrl;
+        } else {
+          // Ensure it starts with /
+          image = '/' + imageUrl;
+        }
+      }
+      // Log the image value being saved for debugging
+      console.log('Image value being saved to database:', image);
+
+      // Get current date in MySQL DATE format (YYYY-MM-DD)
+      const currentDate = new Date().toISOString().split('T')[0];
+
+      const [insertResult] = await this.database.query(
+        `INSERT INTO candidates (
+          student_id, firstname, lastname, department, email, 
+          position, election_type, party, about_yourself, purpose, 
+          status, image, filed_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           smartVoteCandidate.student_id,
           smartVoteCandidate.firstname,
@@ -53,9 +102,12 @@ export class SmartVoteService {
           smartVoteCandidate.email,
           smartVoteCandidate.position,
           smartVoteCandidate.election_type,
-          smartVoteCandidate.party,
+          smartVoteCandidate.party || '',
           smartVoteCandidate.about_yourself,
           smartVoteCandidate.purpose,
+          status,
+          image,
+          currentDate,
         ],
       );
 
@@ -65,14 +117,18 @@ export class SmartVoteService {
         data: insertResult,
       };
     } catch (error) {
-      // Check if the err
-      // or is related to the "Student ID already exists"
+      // Check if the error is related to duplicate student_id (backup check)
       console.log(error.message);
 
-      if (error.message.includes('Student ID already exists')) {
+      if (
+        error.message.includes('Duplicate entry') ||
+        error.message.includes('PRIMARY') ||
+        error.message.includes('student_id') ||
+        error.message.includes('Student ID already exists')
+      ) {
         return {
           success: false,
-          message: 'This student ID already exists.',
+          message: 'You have already filed candidacy. Each student can only file once.',
         };
       }
       console.error('Error inserting candidate:', error);
@@ -94,10 +150,28 @@ export class SmartVoteService {
         throw new Error('No candidates found');
       }
 
+      // Normalize image URLs
+      const normalizedResult = (result || []).map((candidate: any) => {
+        if (candidate.image && typeof candidate.image === 'string' && candidate.image.trim() !== '') {
+          // If it's already a full URL, keep it
+          if (candidate.image.startsWith('http://') || candidate.image.startsWith('https://')) {
+            // Already normalized
+          } else {
+            // Ensure it starts with / if it's a relative path
+            const imagePath = candidate.image.startsWith('/') ? candidate.image : `/${candidate.image}`;
+            candidate.image = FileUploadUtil.getFileUrl(imagePath);
+          }
+        } else {
+          // Set to null if empty or invalid
+          candidate.image = null;
+        }
+        return candidate;
+      });
+
       return {
         success: true,
         message: 'Candidates retrieved successfully',
-        data: result,
+        data: normalizedResult,
       };
     } catch (error) {
       console.error('Error retrieving candidates:', error);
@@ -121,10 +195,28 @@ export class SmartVoteService {
       //   throw new Error('No candidates found for the provided student ID.');
       // }
 
+      // Normalize image URLs
+      const normalizedResult = (result || []).map((candidate: any) => {
+        if (candidate.image && typeof candidate.image === 'string' && candidate.image.trim() !== '') {
+          // If it's already a full URL, keep it
+          if (candidate.image.startsWith('http://') || candidate.image.startsWith('https://')) {
+            // Already normalized
+          } else {
+            // Ensure it starts with / if it's a relative path
+            const imagePath = candidate.image.startsWith('/') ? candidate.image : `/${candidate.image}`;
+            candidate.image = FileUploadUtil.getFileUrl(imagePath);
+          }
+        } else {
+          // Set to null if empty or invalid
+          candidate.image = null;
+        }
+        return candidate;
+      });
+
       return {
         success: true,
         message: 'Candidates retrieved successfully.',
-        data: result,
+        data: normalizedResult,
       };
     } catch (error) {
       // Log the error and throw a more descriptive, custom error
@@ -136,15 +228,34 @@ export class SmartVoteService {
   //* Get Candidates by Election Type
   async getCandidates(election_type: string) {
     try {
-      // Assuming 'findCandidates' stored procedure takes a student_id
-      const [result] = await this.database.callStoredProcedure(
-        'getCandidates',
+      // Use direct SQL query instead of stored procedure
+      const [result] = await this.database.query(
+        'SELECT * FROM candidates WHERE election_type = ?',
         [election_type],
       );
+      
+      // Normalize image URLs
+      const normalizedResult = (result || []).map((candidate: any) => {
+        if (candidate.image && typeof candidate.image === 'string' && candidate.image.trim() !== '') {
+          // If it's already a full URL, keep it
+          if (candidate.image.startsWith('http://') || candidate.image.startsWith('https://')) {
+            // Already normalized
+          } else {
+            // Ensure it starts with / if it's a relative path
+            const imagePath = candidate.image.startsWith('/') ? candidate.image : `/${candidate.image}`;
+            candidate.image = FileUploadUtil.getFileUrl(imagePath);
+          }
+        } else {
+          // Set to null if empty or invalid
+          candidate.image = null;
+        }
+        return candidate;
+      });
+      
       return {
         success: true,
         message: 'Candidates retrieved successfully.',
-        data: result,
+        data: normalizedResult,
       };
     } catch (error) {
       console.error('Error retrieving candidates:', error);
@@ -155,15 +266,34 @@ export class SmartVoteService {
   //* Get Approved Candidates
   async getApprovedCandidates(election_type: string) {
     try {
-      // Assuming 'findCandidates' stored procedure takes a student_id
-      const [result] = await this.database.callStoredProcedure(
-        'getApprovedCandidates',
-        [election_type],
+      // Use direct SQL query instead of stored procedure
+      const [result] = await this.database.query(
+        'SELECT * FROM candidates WHERE election_type = ? AND status = ?',
+        [election_type, 'APPROVED'],
       );
+      
+      // Normalize image URLs
+      const normalizedResult = (result || []).map((candidate: any) => {
+        if (candidate.image && typeof candidate.image === 'string' && candidate.image.trim() !== '') {
+          // If it's already a full URL, keep it
+          if (candidate.image.startsWith('http://') || candidate.image.startsWith('https://')) {
+            // Already normalized
+          } else {
+            // Ensure it starts with / if it's a relative path
+            const imagePath = candidate.image.startsWith('/') ? candidate.image : `/${candidate.image}`;
+            candidate.image = FileUploadUtil.getFileUrl(imagePath);
+          }
+        } else {
+          // Set to null if empty or invalid
+          candidate.image = null;
+        }
+        return candidate;
+      });
+      
       return {
         success: true,
         message: 'Candidates retrieved successfully.',
-        data: result,
+        data: normalizedResult,
       };
     } catch (error) {
       console.error('Error retrieving candidates:', error);

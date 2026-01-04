@@ -11,6 +11,7 @@ export class CandidatesDto {
   election_type: string;
   status: string;
   remarks: string;
+  image?: string; // Optional: URL or path to candidate profile image
 }
 
 export class VotersDto {

@@ -8,7 +8,10 @@ import {
   Delete,
   HttpException,
   HttpStatus,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { SmartVoteService } from './smart-vote.service';
 import {
   AdminDto,
@@ -20,6 +23,8 @@ import {
   UpdatePasswordDto,
 } from './dto/create-smart-vote.dto';
 import { MailerService } from './mailer.services';
+import { FileUploadUtil, MulterFile } from 'src/utils/file-upload.util';
+import { memoryStorage } from 'multer';
 
 @Controller('smart-vote')
 export class SmartVoteController {
@@ -27,6 +32,61 @@ export class SmartVoteController {
     private readonly smartVoteService: SmartVoteService,
     private readonly mailerService: MailerService,
   ) {}
+
+  //* Upload candidate image
+  @Post('upload-candidate-image')
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    }),
+  )
+  async uploadCandidateImage(@UploadedFile() file: any) {
+    try {
+      if (!file) {
+        throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+      }
+
+      // Convert Express.Multer.File to MulterFile interface
+      const multerFile: MulterFile = {
+        fieldname: file.fieldname,
+        originalname: file.originalname,
+        encoding: file.encoding,
+        mimetype: file.mimetype,
+        size: file.size,
+        buffer: file.buffer,
+      };
+
+      // Validate file
+      const validation = FileUploadUtil.validateFile(multerFile);
+      if (!validation.valid) {
+        throw new HttpException(validation.error || 'Invalid file', HttpStatus.BAD_REQUEST);
+      }
+
+      // Save file
+      const { relativePath } = await FileUploadUtil.saveFile(multerFile);
+      
+      // Return full URL for frontend
+      const fullUrl = FileUploadUtil.getFileUrl(relativePath);
+
+      return {
+        success: true,
+        message: 'Image uploaded successfully',
+        data: {
+          url: fullUrl,
+          path: relativePath,
+        },
+      };
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        error.message || 'Failed to upload image',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 
   //* insert candidate
   @Post('insert-candidates')
